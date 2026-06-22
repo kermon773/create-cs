@@ -1,0 +1,12 @@
+{
+  "token": "MTQ1OTUxNTQyMzY4MTk0MTczOQ.GNTR8L.cb_ey-Yifmwdd2NI_zQlPTlbtaIpGQr5GZV6SU",
+  "prefix": "%",
+  "aiModel": "claude-sonnet-4.6",
+  "aiApiUrl": "https://arnaru-ai.vercel.app",
+  "csButtonId": "create_cs_modal",
+  "csModalId": "submit_cs_form",
+  "maxRetryZeroGPT": 3,
+  "embedColor": "#5865F2",
+  "embedColorSuccess": "#57F287",
+  "embedColorError": "#ED4245"
+}
