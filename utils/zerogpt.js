@@ -7,7 +7,13 @@ const axios = require('axios');
 /**
  * Check text against ZeroGPT website's internal endpoint.
  * @param {string} text
- * @returns {Promise<{ passed: boolean, aiScore: number, isHuman: number, skipped: boolean }>}
+ * @returns {Promise<{
+ *   passed: boolean,
+ *   aiScore: number,
+ *   isHuman: number,
+ *   skipped: boolean,
+ *   highlightedSentences: string[]
+ * }>}
  */
 async function isHumanText(text) {
   try {
@@ -17,7 +23,6 @@ async function isHumanText(text) {
       {
         headers: {
           'Content-Type': 'application/json',
-          // Mimic browser headers so the request looks like it came from the website
           'Origin': 'https://www.zerogpt.com',
           'Referer': 'https://www.zerogpt.com/',
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
@@ -27,18 +32,28 @@ async function isHumanText(text) {
     );
 
     const data = response.data;
-    // Shape: { success, data: { fakePercentage, isHuman, ... } }
+    // Shape: { success, data: { fakePercentage, isHuman, textWords: [...], ... } }
     const inner = data?.data ?? data;
     const aiScore = inner?.fakePercentage ?? inner?.aiScore ?? 0;
     const isHuman = inner?.isHuman ?? (100 - aiScore);
 
-    return { passed: aiScore === 0, aiScore, isHuman, skipped: false };
+    // ── Extract highlighted (AI-detected) sentences ──────────────────────────
+    // ZeroGPT returns textWords: array of { text, isHuman: 0|1 }
+    // isHuman === 0 means the sentence is highlighted yellow (detected as AI)
+    const textWords = inner?.textWords ?? inner?.sentences ?? [];
+    const highlightedSentences = Array.isArray(textWords)
+      ? textWords
+          .filter(w => w && (w.isHuman === 0 || w.is_human === 0 || w.generated === true))
+          .map(w => (w.text ?? w.sentence ?? '').trim())
+          .filter(Boolean)
+      : [];
+
+    return { passed: aiScore === 0, aiScore, isHuman, skipped: false, highlightedSentences };
   } catch (err) {
     const status = err?.response?.status;
     const msg = err?.response?.data?.message || err.message;
     console.warn(`[ZeroGPT] Check gagal (${status ?? 'network'}): ${msg} — dilewati`);
-    // Graceful degradation: skip check, still send CS to user
-    return { passed: true, aiScore: 0, isHuman: 100, skipped: true };
+    return { passed: true, aiScore: 0, isHuman: 100, skipped: true, highlightedSentences: [] };
   }
 }
 
