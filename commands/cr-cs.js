@@ -6,7 +6,7 @@ const {
   TextInputComponent,
   MessageAttachment
 } = require('discord.js');
-const { generateCharacterStory } = require('../ai');
+const { generateCharacterStory, patchHighlightedSentences } = require('../ai');
 const { isHumanText } = require('../utils/zerogpt');
 const config = require('../config.json');
 const path = require('path');
@@ -178,14 +178,20 @@ async function handleCsModalSubmit(interaction) {
     });
   }
 
-  // ── Step 2: ZeroGPT retry loop — target exactly 0% ─────────────────────────
-  let zerogptResult = { passed: false, aiScore: 100, isHuman: 0, skipped: false };
+  // ── Step 2: ZeroGPT retry loop — 3-tier logic ──────────────────────────────
+  //
+  //  TIER 1 — aiScore === 100% : Buat ulang teks penuh (paling lambat, perlu ketika semuanya AI)
+  //  TIER 2 — 50% < aiScore < 100% : Copy highlight kuning → patch hanya bagian itu (lebih cepat)
+  //  TIER 3 — aiScore <= 50%  : Copy highlight kuning → patch hanya bagian itu (cepat)
+  //  TARGET  — aiScore === 0  : Selesai
+  //
+  let zerogptResult = { passed: false, aiScore: 100, isHuman: 0, skipped: false, highlightedSentences: [] };
   let attempt = 1;
 
   while (attempt <= MAX_ZEROGPT_RETRY) {
     await interaction.editReply({
       embeds: [statusEmbed(config.embedColor, '🔍 Mengecek ZeroGPT...',
-        `> Attempt **${attempt}/${MAX_ZEROGPT_RETRY}** — Mengecek apakah teks lolos 0% AI...`
+        `> Attempt **${attempt}/${MAX_ZEROGPT_RETRY}** — Mengecek skor AI...`
       )]
     });
 
@@ -197,26 +203,65 @@ async function handleCsModalSubmit(interaction) {
       break;
     }
 
-    console.log(`[ZeroGPT] Attempt ${attempt}: ${zerogptResult.aiScore}% AI`);
+    console.log(`[ZeroGPT] Attempt ${attempt}: ${zerogptResult.aiScore}% AI | Highlighted: ${zerogptResult.highlightedSentences.length} kalimat`);
 
-    // 0% achieved — done!
+    // ✅ Target 0% tercapai — selesai!
     if (zerogptResult.aiScore === 0) break;
 
-    // Not 0% — regenerate with escalating prompt
-    if (attempt < MAX_ZEROGPT_RETRY) {
+    if (attempt >= MAX_ZEROGPT_RETRY) break;
+
+    const score = zerogptResult.aiScore;
+
+    if (score === 100) {
+      // ── TIER 1: 100% AI → Buat ulang seluruh teks ──────────────────────────
       await interaction.editReply({
         embeds: [statusEmbed('#FEE75C',
-          `⚠️ ZeroGPT: ${zerogptResult.aiScore}% AI — Regenerating... (${attempt}/${MAX_ZEROGPT_RETRY})`,
-          `> Teks terdeteksi AI. Menulis ulang dengan gaya lebih human...`
+          `⚠️ ZeroGPT: ${score}% AI — Menulis Ulang Penuh... (${attempt}/${MAX_ZEROGPT_RETRY})`,
+          `> Teks 100% terdeteksi AI. Membuat ulang seluruh Character Story...`
         )]
       });
 
       try {
-        // Pass attempt+1 so escalated system prompt is used
         csText = await generateCharacterStory(formData, attempt + 1);
       } catch (err) {
-        console.error('[CS] Regenerate error:', err.message);
+        console.error('[CS] Full regenerate error:', err.message);
         break;
+      }
+
+    } else {
+      // ── TIER 2 & 3: 1%–99% AI → Patch hanya kalimat highlight kuning ───────
+      const highlighted = zerogptResult.highlightedSentences;
+      const tierLabel = score > 50 ? `TIER 2 (${score}% > 50%)` : `TIER 3 (${score}% ≤ 50%)`;
+
+      await interaction.editReply({
+        embeds: [statusEmbed('#FEE75C',
+          `⚠️ ZeroGPT: ${score}% AI — Patch Highlight... (${attempt}/${MAX_ZEROGPT_RETRY})`,
+          `> ${tierLabel}: Mengambil **${highlighted.length} kalimat** highlight kuning & mengubah ke gaya ambigu...`
+        )]
+      });
+
+      if (highlighted.length > 0) {
+        try {
+          csText = await patchHighlightedSentences(csText, highlighted);
+        } catch (err) {
+          console.error('[CS] Patch highlighted error:', err.message);
+          // Fallback: regenerate full jika patch gagal
+          try {
+            csText = await generateCharacterStory(formData, attempt + 1);
+          } catch (err2) {
+            console.error('[CS] Fallback regenerate error:', err2.message);
+            break;
+          }
+        }
+      } else {
+        // Tidak ada highlighted terdeteksi tapi score > 0 — regenerate full sebagai fallback
+        console.warn('[ZeroGPT] Score > 0 tapi tidak ada highlighted sentences — fallback full regenerate');
+        try {
+          csText = await generateCharacterStory(formData, attempt + 1);
+        } catch (err) {
+          console.error('[CS] Fallback regenerate error:', err.message);
+          break;
+        }
       }
     }
 
@@ -240,8 +285,10 @@ async function handleCsModalSubmit(interaction) {
     zerogptStatus = '⚠️ Tidak dicek (ZeroGPT API unavailable)';
   } else if (zerogptResult.aiScore === 0) {
     zerogptStatus = `✅ 0% AI — Lolos! Teks 100% terdeteksi Human`;
+  } else if (zerogptResult.aiScore === 100) {
+    zerogptStatus = `⚠️ ${zerogptResult.aiScore}% AI setelah ${attempt} percobaan (full rewrite) — dikirim tetap`;
   } else {
-    zerogptStatus = `⚠️ ${zerogptResult.aiScore}% AI setelah ${attempt} percobaan — dikirim tetap`;
+    zerogptStatus = `⚠️ ${zerogptResult.aiScore}% AI setelah ${attempt} percobaan (patch highlight) — dikirim tetap`;
   }
 
   await interaction.editReply({
