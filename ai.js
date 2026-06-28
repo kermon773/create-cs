@@ -233,4 +233,54 @@ async function generateCharacterStory(formData, attempt = 1) {
   return cleanCSText(raw);
 }
 
-module.exports = { askAI, generateCharacterStory };
+// ─── Patch highlighted sentences ─────────────────────────────────────────────
+
+/**
+ * Ambil kalimat-kalimat yang di-highlight kuning oleh ZeroGPT,
+ * lalu minta AI ubah hanya bagian itu ke gaya ambiguitas yang lebih natural.
+ * Teks di luar highlighted tetap tidak berubah.
+ *
+ * @param {string} fullText         - Teks CS lengkap saat ini
+ * @param {string[]} highlighted    - Array kalimat yang terdeteksi AI oleh ZeroGPT
+ * @returns {Promise<string>}       - Teks CS dengan kalimat highlight sudah diubah
+ */
+async function patchHighlightedSentences(fullText, highlighted) {
+  if (!highlighted || highlighted.length === 0) return fullText;
+
+  const PATCH_SYSTEM = `Kamu adalah editor teks Indonesia yang ahli menulis dengan gaya AMBIGU dan terasa seperti tulisan manusia.
+Tugasmu: Ubah kalimat-kalimat yang diberikan agar terasa lebih natural, tidak beraturan seperti manusia asli, dan tidak terdeteksi AI.
+
+ATURAN WAJIB:
+- Pertahankan MAKNA dan KONTEKS yang sama
+- Buat variasi kalimat: sesekali sangat pendek, sesekali panjang mengalir
+- Hindari pola "Subjek + predikat + objek" yang berulang
+- Gunakan gaya bercerita oral — seperti orang cerita ke teman
+- JANGAN gunakan Markdown, emoji, heading, atau simbol apapun
+- Output HANYA kalimat yang sudah diubah, satu per baris sesuai urutan input
+- Jumlah baris output HARUS SAMA PERSIS dengan jumlah kalimat input`;
+
+  const highlightedList = highlighted
+    .map((s, i) => `${i + 1}. ${s}`)
+    .join('\n');
+
+  const userMsg =
+    `Ubah ${highlighted.length} kalimat berikut ke gaya lebih human & ambigu:\n\n` +
+    `${highlightedList}\n\n` +
+    `Output: ${highlighted.length} baris, satu kalimat per baris, tanpa nomor.`;
+
+  const raw = await askAI(userMsg, PATCH_SYSTEM);
+  const patchedLines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+
+  // Ganti tiap kalimat highlighted dalam fullText dengan versi yang sudah di-patch
+  let patched = fullText;
+  highlighted.forEach((original, i) => {
+    const replacement = patchedLines[i] || original;
+    // Escape special regex chars before replacing
+    const escaped = original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    patched = patched.replace(new RegExp(escaped, 'g'), replacement);
+  });
+
+  return cleanCSText(patched);
+}
+
+module.exports = { askAI, generateCharacterStory, patchHighlightedSentences };
