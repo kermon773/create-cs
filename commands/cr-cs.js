@@ -9,15 +9,15 @@ const {
 const { generateCharacterStory, patchHighlightedSentences } = require('../ai');
 const { isHumanText } = require('../utils/zerogpt');
 const config = require('../config.json');
-const path = require('path');
-const os = require('os');
-const fs = require('fs');
+const path   = require('path');
+const os     = require('os');
+const fs     = require('fs');
 
 const BUTTON_ID = config.csButtonId;
-const MODAL_ID = config.csModalId;
+const MODAL_ID  = config.csModalId;
 
-// Maximum retries for ZeroGPT — keeps going until 0% or limit hit
-const MAX_ZEROGPT_RETRY = 10;
+// Loop sampai 0% — tidak ada batas percobaan, tapi ada safety cap agar tidak infinite
+const MAX_ZEROGPT_RETRY = 15;
 
 // ─── %cr-cs command ───────────────────────────────────────────────────────────
 
@@ -29,12 +29,14 @@ async function handleCrCsCommand(message) {
       '**Tekan tombol di bawah untuk membuat Character Story kamu!**\n\n' +
       '> Isi form dengan data karakter IC kamu.\n' +
       '> AI akan otomatis membuat CS berkualitas tinggi.\n' +
-      '> Hasil dikirim dalam format `.txt` siap pakai.'
+      '> Hasil dikirim dalam format `.txt` siap pakai.\n' +
+      '> CS **dijamin** lolos 0% ZeroGPT sebelum dikirim.'
     )
     .addField('✅ Fitur', [
       '• Gaya penulisan ambigu & natural',
-      '• Ditulis oleh Claude Sonnet',
-      '• Lolos uji ZeroGPT',
+      '• Analisis realtime contoh ambiguitas',
+      '• Generasi instant — tidak bertele-tele',
+      '• Wajib lolos 0% ZeroGPT sebelum dikirim',
       '• Format file `.txt` langsung pakai'
     ].join('\n'))
     .setFooter({ text: 'Character Story • Powered by Dott' })
@@ -102,7 +104,6 @@ async function handleCreateCsButton(interaction) {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Parse "4, sukses" | "3, tidak sukses" */
 function parseParagrafField(raw) {
   const cleaned = raw.toLowerCase().trim();
   const numberMatch = cleaned.match(/\d+/);
@@ -111,7 +112,6 @@ function parseParagrafField(raw) {
   return { jumlahParagraf: jumlah, sukses };
 }
 
-/** Parse "Los Santos, 12 Januari 2000" → { kota, tanggal } */
 function parseTTL(ttlRaw) {
   const parts = ttlRaw.split(',').map(s => s.trim());
   return parts.length >= 2
@@ -119,7 +119,6 @@ function parseTTL(ttlRaw) {
     : { kota: ttlRaw, tanggal: ttlRaw };
 }
 
-/** Build the plain-text .txt file content */
 function buildTxtContent(nama, ttlRaw, pekerjaan, sukses, csText, zerogptResult) {
   const zerogptLine = zerogptResult.skipped
     ? 'ZeroGPT  : Tidak dicek (API unavailable)'
@@ -142,33 +141,40 @@ function buildTxtContent(nama, ttlRaw, pekerjaan, sukses, csText, zerogptResult)
   ].join('\n');
 }
 
-// ─── Modal submit → generate → ZeroGPT loop → send .txt ──────────────────────
+function statusEmbed(color, title, description) {
+  return new MessageEmbed()
+    .setColor(color)
+    .setTitle(title)
+    .setDescription(description)
+    .setTimestamp();
+}
+
+// ─── Modal submit → generate → ZeroGPT loop wajib 0% → send .txt ─────────────
 
 async function handleCsModalSubmit(interaction) {
   await interaction.deferReply({ ephemeral: true });
 
-  const nama       = interaction.fields.getTextInputValue('nama_ic').trim();
-  const ttlRaw     = interaction.fields.getTextInputValue('ttl').trim();
-  const pekerjaan  = interaction.fields.getTextInputValue('pekerjaan').trim();
+  const nama        = interaction.fields.getTextInputValue('nama_ic').trim();
+  const ttlRaw      = interaction.fields.getTextInputValue('ttl').trim();
+  const pekerjaan   = interaction.fields.getTextInputValue('pekerjaan').trim();
   const paragrafRaw = interaction.fields.getTextInputValue('jumlah_paragraf').trim();
 
-  const { kota, tanggal }         = parseTTL(ttlRaw);
+  const { kota, tanggal }          = parseTTL(ttlRaw);
   const { jumlahParagraf, sukses } = parseParagrafField(paragrafRaw);
-
   const formData = { nama, ttl: tanggal, kota, pekerjaan, sukses, jumlahParagraf };
 
-  // ── Step 1: Generate ────────────────────────────────────────────────────────
+  // ── Step 1: Generate CS (instant, satu call, analisis ambiguitas realtime) ──
   await interaction.editReply({
     embeds: [statusEmbed(config.embedColor, '⏳ Membuat Character Story...',
       `**Karakter:** ${nama} | **TTL:** ${ttlRaw}\n` +
       `**Pekerjaan:** ${pekerjaan} | **Paragraf:** ${jumlahParagraf} | **Status:** ${sukses}\n\n` +
-      `> 🤖 Claude Sonnet sedang menulis CS kamu...`
+      `> 🤖 AI sedang menulis CS dengan analisis contoh ambiguitas...`
     )]
   });
 
   let csText;
   try {
-    csText = await generateCharacterStory(formData, 1);
+    csText = await generateCharacterStory(formData);
   } catch (err) {
     console.error('[CS] Generate error:', err.message);
     return interaction.editReply({
@@ -178,124 +184,131 @@ async function handleCsModalSubmit(interaction) {
     });
   }
 
-  // ── Step 2: ZeroGPT retry loop — 3-tier logic ──────────────────────────────
+  // ── Step 2: ZeroGPT loop — WAJIB 0%, tidak boleh kirim jika masih > 0% ─────
   //
-  //  TIER 1 — aiScore === 100% : Buat ulang teks penuh (paling lambat, perlu ketika semuanya AI)
-  //  TIER 2 — 50% < aiScore < 100% : Copy highlight kuning → patch hanya bagian itu (lebih cepat)
-  //  TIER 3 — aiScore <= 50%  : Copy highlight kuning → patch hanya bagian itu (cepat)
-  //  TARGET  — aiScore === 0  : Selesai
+  //  LOGIKA:
+  //  • aiScore === 100% → Full rewrite (seluruh teks dibuat ulang)
+  //  • aiScore > 0% & < 100% → Patch hanya kalimat highlight kuning (lebih cepat)
+  //  • aiScore === 0% → ✅ Selesai, kirim file
+  //  • Jika API skip (unavailable) → Kirim tetap dengan warning
   //
   let zerogptResult = { passed: false, aiScore: 100, isHuman: 0, skipped: false, highlightedSentences: [] };
-  let attempt = 1;
+  let attempt = 0;
 
-  while (attempt <= MAX_ZEROGPT_RETRY) {
+  while (true) {
+    attempt++;
+
     await interaction.editReply({
-      embeds: [statusEmbed(config.embedColor, '🔍 Mengecek ZeroGPT...',
-        `> Attempt **${attempt}/${MAX_ZEROGPT_RETRY}** — Mengecek skor AI...`
+      embeds: [statusEmbed(config.embedColor, '🔍 Verifikasi ZeroGPT...',
+        `> Cek ke-**${attempt}** — Memastikan teks lolos 0% AI sebelum dikirim...`
       )]
     });
 
     zerogptResult = await isHumanText(csText);
 
-    // API unavailable — skip gracefully
+    // API tidak tersedia — skip, kirim dengan warning
     if (zerogptResult.skipped) {
-      console.warn('[ZeroGPT] API tidak tersedia — skip.');
+      console.warn('[ZeroGPT] API tidak tersedia — skip verifikasi.');
       break;
     }
 
-    console.log(`[ZeroGPT] Attempt ${attempt}: ${zerogptResult.aiScore}% AI | Highlighted: ${zerogptResult.highlightedSentences.length} kalimat`);
-
-    // ✅ Target 0% tercapai — selesai!
-    if (zerogptResult.aiScore === 0) break;
-
-    if (attempt >= MAX_ZEROGPT_RETRY) break;
-
     const score = zerogptResult.aiScore;
+    console.log(`[ZeroGPT] Attempt ${attempt}: ${score}% AI | Highlighted: ${zerogptResult.highlightedSentences.length} kalimat`);
+
+    // ✅ 0% — lolos, keluar loop
+    if (score === 0) break;
+
+    // Safety cap — sudah terlalu banyak percobaan
+    if (attempt >= MAX_ZEROGPT_RETRY) {
+      console.warn(`[ZeroGPT] Safety cap ${MAX_ZEROGPT_RETRY} tercapai, ${score}% masih terdeteksi.`);
+      break;
+    }
 
     if (score === 100) {
-      // ── TIER 1: 100% AI → Buat ulang seluruh teks ──────────────────────────
+      // ── Full Rewrite: 100% AI → Buat ulang seluruh teks ───────────────────
       await interaction.editReply({
         embeds: [statusEmbed('#FEE75C',
-          `⚠️ ZeroGPT: ${score}% AI — Menulis Ulang Penuh... (${attempt}/${MAX_ZEROGPT_RETRY})`,
-          `> Teks 100% terdeteksi AI. Membuat ulang seluruh Character Story...`
+          `🔄 ZeroGPT: ${score}% AI — Menulis Ulang... (${attempt}/${MAX_ZEROGPT_RETRY})`,
+          `> Seluruh teks 100% terdeteksi AI.\n> Membuat ulang Character Story dari awal...`
         )]
       });
 
       try {
-        csText = await generateCharacterStory(formData, attempt + 1);
+        csText = await generateCharacterStory(formData);
       } catch (err) {
-        console.error('[CS] Full regenerate error:', err.message);
+        console.error('[CS] Full rewrite error:', err.message);
         break;
       }
 
     } else {
-      // ── TIER 2 & 3: 1%–99% AI → Patch hanya kalimat highlight kuning ───────
+      // ── Patch Highlight: >0% & <100% → Ubah hanya kalimat kuning ──────────
       const highlighted = zerogptResult.highlightedSentences;
-      const tierLabel = score > 50 ? `TIER 2 (${score}% > 50%)` : `TIER 3 (${score}% ≤ 50%)`;
 
       await interaction.editReply({
         embeds: [statusEmbed('#FEE75C',
-          `⚠️ ZeroGPT: ${score}% AI — Patch Highlight... (${attempt}/${MAX_ZEROGPT_RETRY})`,
-          `> ${tierLabel}: Mengambil **${highlighted.length} kalimat** highlight kuning & mengubah ke gaya ambigu...`
+          `✏️ ZeroGPT: ${score}% AI — Patch ${highlighted.length} Kalimat... (${attempt}/${MAX_ZEROGPT_RETRY})`,
+          `> Mengambil **${highlighted.length} kalimat** highlight kuning\n` +
+          `> Mengubah ke gaya ambigu lebih natural...`
         )]
       });
 
-      if (highlighted.length > 0) {
+      try {
+        csText = await patchHighlightedSentences(csText, highlighted);
+      } catch (err) {
+        console.error('[CS] Patch error:', err.message);
+        // Fallback ke full rewrite jika patch gagal
         try {
-          csText = await patchHighlightedSentences(csText, highlighted);
-        } catch (err) {
-          console.error('[CS] Patch highlighted error:', err.message);
-          // Fallback: regenerate full jika patch gagal
-          try {
-            csText = await generateCharacterStory(formData, attempt + 1);
-          } catch (err2) {
-            console.error('[CS] Fallback regenerate error:', err2.message);
-            break;
-          }
-        }
-      } else {
-        // Tidak ada highlighted terdeteksi tapi score > 0 — regenerate full sebagai fallback
-        console.warn('[ZeroGPT] Score > 0 tapi tidak ada highlighted sentences — fallback full regenerate');
-        try {
-          csText = await generateCharacterStory(formData, attempt + 1);
-        } catch (err) {
-          console.error('[CS] Fallback regenerate error:', err.message);
+          csText = await generateCharacterStory(formData);
+        } catch (err2) {
+          console.error('[CS] Fallback rewrite error:', err2.message);
           break;
         }
       }
     }
-
-    attempt++;
   }
 
-  // ── Step 3: Write .txt (clean, no markdown) ─────────────────────────────────
+  // ── Step 3: Jika masih > 0% dan bukan API skip — tolak kirim, beri warning ─
+  const finalScore = zerogptResult.aiScore;
+  const apiSkipped = zerogptResult.skipped;
+
+  if (!apiSkipped && finalScore > 0) {
+    // Sudah mencapai safety cap tapi belum lolos — kirim dengan warning jelas
+    await interaction.editReply({
+      embeds: [statusEmbed('#ED4245', '⚠️ CS Belum Lolos ZeroGPT',
+        `**Karakter:** ${nama}\n\n` +
+        `Setelah **${attempt} percobaan**, CS masih terdeteksi **${finalScore}% AI** oleh ZeroGPT.\n\n` +
+        `> File tetap dikirim, namun kamu mungkin perlu edit manual bagian yang terdeteksi.\n` +
+        `> Coba jalankan \`%cr-cs\` lagi untuk hasil yang lebih baik.`
+      )]
+    });
+    // Tetap lanjut kirim file (tidak block user)
+  }
+
+  // ── Step 4: Tulis & kirim file .txt ─────────────────────────────────────────
   const fileName = `Character Story - ${nama}.txt`;
   const tmpPath  = path.join(os.tmpdir(), fileName);
 
   fs.writeFileSync(tmpPath, buildTxtContent(nama, ttlRaw, pekerjaan, sukses, csText, zerogptResult), 'utf-8');
-
   const attachment = new MessageAttachment(tmpPath, fileName);
 
-  // ── Step 4: Send result ─────────────────────────────────────────────────────
-  const passed = zerogptResult.skipped || zerogptResult.aiScore === 0;
+  // Tentukan warna & status final
+  const passed      = apiSkipped || finalScore === 0;
   const resultColor = passed ? config.embedColorSuccess : '#FEE75C';
 
   let zerogptStatus;
-  if (zerogptResult.skipped) {
+  if (apiSkipped) {
     zerogptStatus = '⚠️ Tidak dicek (ZeroGPT API unavailable)';
-  } else if (zerogptResult.aiScore === 0) {
+  } else if (finalScore === 0) {
     zerogptStatus = `✅ 0% AI — Lolos! Teks 100% terdeteksi Human`;
-  } else if (zerogptResult.aiScore === 100) {
-    zerogptStatus = `⚠️ ${zerogptResult.aiScore}% AI setelah ${attempt} percobaan (full rewrite) — dikirim tetap`;
   } else {
-    zerogptStatus = `⚠️ ${zerogptResult.aiScore}% AI setelah ${attempt} percobaan (patch highlight) — dikirim tetap`;
+    zerogptStatus = `⚠️ ${finalScore}% AI setelah ${attempt} percobaan — dikirim dengan catatan`;
   }
 
   await interaction.editReply({
     embeds: [
       new MessageEmbed()
         .setColor(resultColor)
-        .setTitle('✅ Character Story Selesai!')
+        .setTitle(passed ? '✅ Character Story Selesai!' : '⚠️ Character Story Dikirim')
         .setDescription(
           `**Karakter:** ${nama}\n` +
           `**TTL:** ${ttlRaw}\n` +
@@ -309,18 +322,7 @@ async function handleCsModalSubmit(interaction) {
     files: [attachment]
   });
 
-  // Cleanup
   try { fs.unlinkSync(tmpPath); } catch (_) {}
-}
-
-// ─── Shared embed builder ─────────────────────────────────────────────────────
-
-function statusEmbed(color, title, description) {
-  return new MessageEmbed()
-    .setColor(color)
-    .setTitle(title)
-    .setDescription(description)
-    .setTimestamp();
 }
 
 module.exports = { handleCrCsCommand, handleCreateCsButton, handleCsModalSubmit, BUTTON_ID, MODAL_ID };
