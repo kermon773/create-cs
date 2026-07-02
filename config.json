@@ -1,7 +1,7 @@
 {
   "token": "MTQ1OTUxNTQyMzY4MTk0MTczOQ.GNTR8L.cb_ey-Yifmwdd2NI_zQlPTlbtaIpGQr5GZV6SU",
   "prefix": "%",
-  "aiModel": "gpt-4o-mini",
+  "aiModel": "gpt-5.5",
   "aiApiUrl": "https://arnaru-ai.vercel.app",
   "csButtonId": "create_cs_modal",
   "csModalId": "submit_cs_form",
