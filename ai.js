@@ -4,12 +4,10 @@ const path  = require('path');
 const config = require('./config.json');
 
 // ─── Load ambiguitas data (realtime reference) ────────────────────────────────
-// Dibaca sekali saat startup, berisi contoh teks + kata kunci ambiguitas
 const ambiguitas = JSON.parse(
   fs.readFileSync(path.join(__dirname, 'ambiguitas.json'), 'utf-8')
 );
 
-// Ambil semua contoh teks yang tersedia dari ambiguitas.json
 const CONTOH_TEKS_LIST = ambiguitas.contoh_teks.map(c => c.teks);
 const KATA_KUNCI       = ambiguitas.kata_kunci_ambiguitas;
 
@@ -35,7 +33,7 @@ GAYA BAHASA (ambiguitas):
 - Bahasa Indonesia natural, mengalir, terasa tulisan manusia
 - Hindari pola "Subjek + predikat + objek" yang terlalu berulang`;
 
-// ─── System prompt utama (dengan semua contoh dari ambiguitas.json) ───────────
+// ─── System prompt utama ──────────────────────────────────────────────────────
 function buildMainSystemPrompt() {
   const contohBlocks = CONTOH_TEKS_LIST
     .map((teks, i) => `[CONTOH ${i + 1}]\n${teks}`)
@@ -54,23 +52,30 @@ ${kataKunci}
 ${BASE_RULES}`;
 }
 
-// ─── System prompt patch (untuk ubah kalimat highlight kuning) ────────────────
+// ─── System prompt patch (context-aware) ─────────────────────────────────────
+// Strategi baru: kirim TEKS PENUH dengan tanda [[UBAH:...]] pada kalimat highlight.
+// AI bisa lihat kalimat sebelum & sesudah → hasil patch nyambung secara alami.
 function buildPatchSystemPrompt() {
-  // Pakai contoh pertama sebagai referensi gaya
-  return `Kamu adalah editor teks Indonesia.
-Tugas: ubah kalimat-kalimat berikut agar terasa 100% ditulis manusia, tidak terdeteksi AI.
+  return `Kamu adalah editor teks Indonesia ahli yang bertugas memperbaiki kalimat terdeteksi AI.
 
-REFERENSI GAYA YANG HARUS DITIRU:
+Kamu akan menerima TEKS LENGKAP yang mengandung tanda [[UBAH: ...]].
+Tanda itu menandai kalimat yang terdeteksi sebagai AI oleh ZeroGPT dan HARUS diubah.
+
+TUGASMU:
+- Ubah HANYA kalimat di dalam tanda [[UBAH: ...]] menjadi versi yang natural, ambigu, dan tidak terdeteksi AI
+- Gunakan kalimat di SEKITAR tanda (konteks sebelum & sesudah) supaya kalimat baru nyambung dengan alur cerita
+- Kalimat di LUAR tanda [[UBAH: ...]] → SIMPAN PERSIS SAMA, tidak boleh ada perubahan satu kata pun
+- Kembalikan SELURUH TEKS — tanda [[UBAH: ...]] harus HILANG dari output (sudah diganti kalimat baru)
+
+REFERENSI GAYA:
 ${CONTOH_TEKS_LIST[0]}
 
-ATURAN:
-- Pertahankan MAKNA dan KONTEKS yang sama, hanya ubah cara penyampaiannya
-- Variasikan panjang kalimat: kadang pendek saja, kadang mengalir panjang
-- Mulai kalimat dari sudut yang tidak terduga — jangan selalu dari subjek
-- Gaya bercerita oral, seperti orang cerita ke teman dekat
-- JANGAN gunakan Markdown, emoji, atau simbol apapun
-- Output: HANYA kalimat yang sudah diubah, satu per baris, tanpa nomor, tanpa penjelasan
-- Jumlah baris output HARUS SAMA PERSIS dengan jumlah kalimat input`;
+ATURAN TAMBAHAN:
+- Variasikan panjang kalimat: kadang sangat pendek, kadang mengalir panjang
+- Mulai kalimat dari sudut tidak terduga — hindari selalu mulai dari subjek
+- Gaya bercerita oral — seperti cerita ke teman dekat
+- DILARANG: Markdown, emoji, simbol apapun, heading, bullet
+- Output format: paragraf murni, sama persis struktur aslinya`;
 }
 
 // ─── Markdown stripper ────────────────────────────────────────────────────────
@@ -85,6 +90,8 @@ function cleanCSText(raw) {
     .replace(/^>\s*/gm, '')
     .replace(/^[\s]*[-*+]\s+/gm, '').replace(/^[\s]*\d+\.\s+/gm, '')
     .replace(/^[\u{1F300}-\u{1FFFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]+\s*/gmu, '')
+    // Bersihkan tanda [[UBAH:...]] jika AI tidak menghilangkannya
+    .replace(/\[\[UBAH:\s*([\s\S]*?)\]\]/g, '$1')
     .replace(/[ \t]+$/gm, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -159,16 +166,13 @@ async function askAI(userMessage, systemOverride = null) {
 }
 
 // ─── Character Story generator ────────────────────────────────────────────────
-// Generasi langsung 1 request (instant) dengan analisis semua contoh ambiguitas.json
-// Tidak ada perulangan escalating — cukup satu prompt lengkap yang sudah optimal
-
 function buildCSPrompt(formData) {
-  const { nama, ttl, kota, pekerjaan, sukses, jumlahParagraf } = formData;
+  const { nama, ttl, kota, pekerjaan, jumlahParagraf } = formData;
   return (
     `Karakter: ${nama}\n` +
     `Lahir: ${ttl} di ${kota}\n` +
-    `Pekerjaan: ${pekerjaan}\n` +
-    `Kondisi akhir: ${sukses}\n\n` +
+    `Pekerjaan: ${pekerjaan}\n\n` +
+    `WAJIB: Sebutkan profesi "${pekerjaan}" minimal SATU KALI di dalam cerita dengan huruf kapital di awal kata.\n\n` +
     `Tulis tepat ${jumlahParagraf} paragraf.\n` +
     `Setiap paragraf diawali 3 spasi.\n` +
     `Tiru PERSIS gaya ambiguitas dari semua contoh yang diberikan.\n` +
@@ -176,19 +180,25 @@ function buildCSPrompt(formData) {
   );
 }
 
-/**
- * Generate CS — satu call, langsung optimal.
- * MAIN_SYSTEM_PROMPT sudah memuat semua contoh ambiguitas.json secara realtime.
- */
 async function generateCharacterStory(formData) {
   const raw = await askAI(buildCSPrompt(formData), buildMainSystemPrompt());
   return cleanCSText(raw);
 }
 
-// ─── Patch highlighted sentences ─────────────────────────────────────────────
+// ─── Patch highlighted sentences (context-aware, 1 request) ──────────────────
 /**
- * Ubah hanya kalimat-kalimat highlight kuning dari ZeroGPT.
- * Teks di luar highlighted tidak disentuh → jauh lebih cepat daripada full rewrite.
+ * Strategi baru — context-aware patching:
+ *
+ * 1. Tandai setiap kalimat highlight di dalam teks penuh dengan [[UBAH: ...]]
+ * 2. Kirim TEKS PENUH + tanda ke AI dalam 1 request
+ * 3. AI bisa lihat kalimat SEBELUM & SESUDAH setiap highlight → hasil patch nyambung
+ * 4. AI kembalikan teks penuh, tanda [[UBAH:...]] sudah hilang (terganti kalimat baru)
+ * 5. Kalimat non-highlight disimpan persis — AI diinstruksikan tidak menyentuhnya
+ *
+ * Keunggulan vs pendekatan lama (replace per kalimat):
+ * - Kalimat patch alur & koherensinya terjaga (AI tahu konteks sekitar)
+ * - Tidak ada risiko regex replace gagal karena teks berubah terlalu banyak
+ * - Satu API call saja → lebih cepat
  *
  * @param {string}   fullText    - Teks CS lengkap
  * @param {string[]} highlighted - Kalimat yang terdeteksi AI (highlight kuning ZeroGPT)
@@ -197,31 +207,43 @@ async function generateCharacterStory(formData) {
 async function patchHighlightedSentences(fullText, highlighted) {
   if (!highlighted || highlighted.length === 0) return fullText;
 
-  const patchSystem = buildPatchSystemPrompt();
+  // ── Step 1: Tandai kalimat highlight di dalam teks penuh ─────────────────
+  let markedText = fullText;
+  let markedCount = 0;
 
-  // Kirim semua kalimat sekaligus dalam satu request
+  for (const sentence of highlighted) {
+    const escaped = sentence.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(escaped, 'g');
+    if (regex.test(markedText)) {
+      // Gunakan format [[UBAH: ...]] — mudah dibaca AI, mudah di-strip kalau terlewat
+      markedText = markedText.replace(new RegExp(escaped, 'g'), `[[UBAH: ${sentence}]]`);
+      markedCount++;
+    }
+  }
+
+  // Tidak ada kalimat yang berhasil ditandai (teks sudah berubah dari iterasi sebelumnya)
+  if (markedCount === 0) {
+    console.warn('[PATCH] Tidak ada kalimat highlight yang cocok di teks — skip patch.');
+    return fullText;
+  }
+
+  console.log(`[PATCH] ${markedCount}/${highlighted.length} kalimat berhasil ditandai [[UBAH:...]] di teks.`);
+  console.log(`[PATCH] Mengirim teks penuh (${markedText.length} karakter) ke AI untuk patch context-aware...`);
+
+  // ── Step 2: Kirim teks penuh + tanda ke AI — 1 request saja ──────────────
   const userMsg =
-    `Ubah ${highlighted.length} kalimat ini ke gaya lebih human & ambigu:\n\n` +
-    highlighted.map((s, i) => `${i + 1}. ${s}`).join('\n') +
-    `\n\nOutput: ${highlighted.length} baris tanpa nomor, satu kalimat per baris.`;
+    `Berikut adalah teks Character Story yang mengandung tanda [[UBAH: ...]].\n` +
+    `Kalimat di dalam tanda itu terdeteksi sebagai AI dan HARUS diubah.\n` +
+    `Kalimat di luar tanda → SIMPAN PERSIS, jangan ubah satu kata pun.\n` +
+    `Tanda [[UBAH: ...]] harus hilang dari output — gantikan dengan kalimat baru yang natural.\n\n` +
+    `TEKS:\n${markedText}`;
 
-  const raw = await askAI(userMsg, patchSystem);
+  const raw = await askAI(userMsg, buildPatchSystemPrompt());
 
-  // Parse output: satu baris = satu kalimat pengganti
-  const patchedLines = raw
-    .split('\n')
-    .map(l => l.replace(/^\d+[\.\)]\s*/, '').trim()) // buang nomor kalau AI nekat kasih
-    .filter(Boolean);
+  console.log(`[PATCH] AI selesai. Membersihkan & mengembalikan teks...`);
 
-  // Replace setiap kalimat highlighted dengan versi baru
-  let patched = fullText;
-  highlighted.forEach((original, i) => {
-    const replacement = patchedLines[i] || original;
-    const escaped = original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    patched = patched.replace(new RegExp(escaped, 'g'), replacement);
-  });
-
-  return cleanCSText(patched);
+  // cleanCSText sudah ada fallback strip [[UBAH:...]] jika AI tidak menghilangkannya
+  return cleanCSText(raw);
 }
 
 module.exports = { askAI, generateCharacterStory, patchHighlightedSentences };
