@@ -19,6 +19,14 @@ const MODAL_ID  = config.csModalId;
 // Safety cap — batas percobaan maksimal sebelum menyerah
 const MAX_ZEROGPT_RETRY = 15;
 
+// ─── Capitalize every word of a string ────────────────────────────────────────
+function capitalizeWords(str) {
+  return str
+    .split(' ')
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
+}
+
 // ─── %cr-cs command ───────────────────────────────────────────────────────────
 
 async function handleCrCsCommand(message) {
@@ -91,11 +99,11 @@ async function handleCreateCsButton(interaction) {
     new MessageActionRow().addComponents(
       new TextInputComponent()
         .setCustomId('jumlah_paragraf')
-        .setLabel('Jumlah Paragraf (1-4) & Status')
+        .setLabel('Jumlah Paragraf (1-4)')
         .setStyle('SHORT')
-        .setPlaceholder('Contoh: 4, sukses  ATAU  3, tidak sukses')
+        .setPlaceholder('Contoh: 4')
         .setRequired(true)
-        .setMaxLength(30)
+        .setMaxLength(1)
     )
   );
 
@@ -105,11 +113,9 @@ async function handleCreateCsButton(interaction) {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function parseParagrafField(raw) {
-  const cleaned = raw.toLowerCase().trim();
-  const numberMatch = cleaned.match(/\d+/);
+  const numberMatch = raw.trim().match(/\d+/);
   const jumlah = numberMatch ? Math.min(4, Math.max(1, parseInt(numberMatch[0]))) : 4;
-  const sukses = cleaned.includes('tidak') ? 'tidak sukses' : 'sukses';
-  return { jumlahParagraf: jumlah, sukses };
+  return { jumlahParagraf: jumlah };
 }
 
 function parseTTL(ttlRaw) {
@@ -119,14 +125,13 @@ function parseTTL(ttlRaw) {
     : { kota: ttlRaw, tanggal: ttlRaw };
 }
 
-function buildTxtContent(nama, ttlRaw, pekerjaan, sukses, csText) {
+function buildTxtContent(nama, ttlRaw, pekerjaan, csText) {
   return [
     'CHARACTER STORY',
     '═══════════════════════════════════════',
     `Nama     : ${nama}`,
     `TTL      : ${ttlRaw}`,
     `Pekerjaan: ${pekerjaan}`,
-    `Status   : ${sukses}`,
     '═══════════════════════════════════════',
     '',
     csText,
@@ -150,20 +155,23 @@ function statusEmbed(color, title, description) {
 async function handleCsModalSubmit(interaction) {
   await interaction.deferReply({ ephemeral: true });
 
-  const nama        = interaction.fields.getTextInputValue('nama_ic').trim();
-  const ttlRaw      = interaction.fields.getTextInputValue('ttl').trim();
-  const pekerjaan   = interaction.fields.getTextInputValue('pekerjaan').trim();
-  const paragrafRaw = interaction.fields.getTextInputValue('jumlah_paragraf').trim();
+  const nama          = interaction.fields.getTextInputValue('nama_ic').trim();
+  const ttlRaw        = interaction.fields.getTextInputValue('ttl').trim();
+  const pekerjaanRaw  = interaction.fields.getTextInputValue('pekerjaan').trim();
+  const paragrafRaw   = interaction.fields.getTextInputValue('jumlah_paragraf').trim();
 
-  const { kota, tanggal }          = parseTTL(ttlRaw);
-  const { jumlahParagraf, sukses } = parseParagrafField(paragrafRaw);
-  const formData = { nama, ttl: tanggal, kota, pekerjaan, sukses, jumlahParagraf };
+  // Profesi selalu diawali kapital pada setiap kata
+  const pekerjaan = capitalizeWords(pekerjaanRaw);
+
+  const { kota, tanggal }       = parseTTL(ttlRaw);
+  const { jumlahParagraf }      = parseParagrafField(paragrafRaw);
+  const formData = { nama, ttl: tanggal, kota, pekerjaan, jumlahParagraf };
 
   // ── Step 1: Generate CS ───────────────────────────────────────────────────
   await interaction.editReply({
     embeds: [statusEmbed(config.embedColor, '⏳ Membuat Character Story...',
       `**Karakter:** ${nama} | **TTL:** ${ttlRaw}\n` +
-      `**Pekerjaan:** ${pekerjaan} | **Paragraf:** ${jumlahParagraf} | **Status:** ${sukses}\n\n` +
+      `**Pekerjaan:** ${pekerjaan} | **Paragraf:** ${jumlahParagraf}\n\n` +
       `> 🤖 AI sedang menulis CS dengan analisis contoh ambiguitas...`
     )]
   });
@@ -184,7 +192,9 @@ async function handleCsModalSubmit(interaction) {
   //
   //  LOGIKA:
   //  • aiScore === 100% → Full rewrite seluruh teks
-  //  • aiScore > 0% & < 100% → Patch kalimat highlight kuning saja
+  //  • aiScore > 0% & < 100% → Patch HANYA kalimat highlight kuning:
+  //      → Kalimat non-highlight DISIMPAN persis aslinya (tidak dikirim ke AI)
+  //      → Kalimat highlight dikirim ke AI, diperbaiki, lalu disisipkan kembali
   //  • aiScore === 0% → ✅ Lolos, kirim file
   //  • API unavailable (skipped) → Beritahu user, JANGAN kirim
   //  • Safety cap tercapai & masih > 0% → Beritahu user, JANGAN kirim
@@ -256,14 +266,18 @@ async function handleCsModalSubmit(interaction) {
       }
 
     } else {
-      // ── Patch Highlight: >0% & <100% → Ubah hanya kalimat kuning ─────────
+      // ── Patch Highlight: >0% & <100% → Ubah HANYA kalimat kuning ─────────
+      // Kalimat non-highlight disimpan asli, hanya kalimat kuning yang dikirim ke AI
       const highlighted = zerogptResult.highlightedSentences;
+      const totalKalimat = csText.split(/(?<=[.!?])\s+/).filter(s => s.trim().length > 5).length;
+      const simpanCount  = totalKalimat - highlighted.length;
 
       await interaction.editReply({
         embeds: [statusEmbed('#FEE75C',
           `✏️ ZeroGPT: ${score}% AI — Patch ${highlighted.length} Kalimat... (${attempt}/${MAX_ZEROGPT_RETRY})`,
-          `> Mengambil **${highlighted.length} kalimat** highlight kuning\n` +
-          `> Mengubah ke gaya ambigu lebih natural...`
+          `> 💾 **${simpanCount > 0 ? simpanCount : 0} kalimat** bukan highlight → **disimpan persis aslinya**\n` +
+          `> ✏️ **${highlighted.length} kalimat** highlight kuning → dikirim ke AI untuk diperbaiki\n` +
+          `> 🔗 Hasil kalimat baru disisipkan kembali ke posisi aslinya`
         )]
       });
 
@@ -290,7 +304,7 @@ async function handleCsModalSubmit(interaction) {
   const fileName = `Character Story - ${nama}.txt`;
   const tmpPath  = path.join(os.tmpdir(), fileName);
 
-  fs.writeFileSync(tmpPath, buildTxtContent(nama, ttlRaw, pekerjaan, sukses, csText), 'utf-8');
+  fs.writeFileSync(tmpPath, buildTxtContent(nama, ttlRaw, pekerjaan, csText), 'utf-8');
   const attachment = new MessageAttachment(tmpPath, fileName);
 
   await interaction.editReply({
@@ -302,7 +316,7 @@ async function handleCsModalSubmit(interaction) {
           `**Karakter:** ${nama}\n` +
           `**TTL:** ${ttlRaw}\n` +
           `**Pekerjaan:** ${pekerjaan}\n` +
-          `**Paragraf:** ${jumlahParagraf} | **Status:** ${sukses}\n\n` +
+          `**Paragraf:** ${jumlahParagraf}\n\n` +
           `**ZeroGPT:** ✅ 0% AI — Lolos! Teks 100% terdeteksi Human`
         )
         .setFooter({ text: 'File .txt terlampir di bawah' })
