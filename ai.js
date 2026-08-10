@@ -19,19 +19,20 @@ LARANGAN KERAS:
 - DILARANG judul/heading atau bullet point
 - Output HANYA paragraf teks murni
 
-FORMAT:
-- Setiap paragraf diawali tepat 3 spasi
-- Antar paragraf dipisahkan 1 baris kosong
-- Tidak ada teks sebelum paragraf pertama atau sesudah paragraf terakhir
+FORMAT & STRUKTUR:
+- Setiap paragraf diawali tepat 3 spasi.
+- Antar paragraf dipisahkan 1 baris kosong.
+- Panjang kalimat HARUS sangat bervariasi (Burstiness tinggi). Buat kalimat yang sangat pendek (3-5 kata), lalu diikuti kalimat panjang yang mendetail.
+- Hindari struktur paragraf yang seragam panjangnya. Buat satu paragraf panjang, dan paragraf lainnya lebih pendek.
 
-GAYA BAHASA (ambiguitas):
-- Kalimat bisa diartikan lebih dari satu cara — jangan pernah eksplisit
-- Gunakan metafora kegiatan sehari-hari sebagai "layar"
-- Batas antara pekerjaan resmi dan hal lain harus selalu "kabur"
-- Kalimat bervariasi: pendek-panjang tidak terduga seperti manusia
-- Akhiri dengan kalimat yang tidak memberi kesimpulan pasti
-- Bahasa Indonesia natural, mengalir, terasa tulisan manusia
-- Hindari pola "Subjek + predikat + objek" yang terlalu berulang`;
+GAYA BAHASA & ANTI-AI (ZeroGPT 0%):
+- Gaya penceritaan harus 100% natural, mengalir seperti manusia bercerita di forum roleplay (semi-formal tapi santai).
+- DILARANG KERAS menggunakan kata klise AI seperti: "Merajut asa", "Tak henti-hentinya", "Sebuah perjalanan yang", "Rintangan yang menghadang", "Penuh liku", "Mengukir sejarah", "Dengan tekad", "Kesedihan mendalam".
+- Transisi kasar: Jangan selalu pakai "Oleh karena itu", "Di sisi lain". Gunakan transisi santai seperti "Tapi", "Bahkan", "Karena itu", atau langsung lompat ke ide berikutnya.
+- Sesekali mulai kalimat dengan kata hubung (contoh: "Dan sejak hari itu...", "Tapi semuanya berubah...") untuk memberikan kesan tulisan manusia.
+- Gunakan metafora kegiatan sehari-hari yang ambigu, batas antara pekerjaan resmi dan hal lain harus kabur.
+- Hindari pola baku "Subjek + Predikat + Objek" yang terus diulang. Putar balik strukturnya sesekali (contoh: "Di sudut kota itu, ia menemukan...").
+- Kalimat bisa diartikan lebih dari satu cara — jangan pernah eksplisit.`;
 
 // ─── System prompt utama ──────────────────────────────────────────────────────
 function buildMainSystemPrompt() {
@@ -42,13 +43,15 @@ function buildMainSystemPrompt() {
   const kataKunci = KATA_KUNCI.map((k, i) => `${i + 1}. "${k}"`).join('\n');
 
   return `Kamu adalah penulis cerita karakter roleplay Indonesia.
-Tulis Character Story dengan gaya AMBIGU, terasa 100% ditulis manusia, dan tidak terdeteksi AI detector.
+Tulis Character Story dengan gaya AMBIGU, terasa 100% ditulis manusia, dan WAJIB lolos 0% di AI detector (ZeroGPT).
 
 ANALISIS & TIRU GAYA INI PERSIS:
 ${contohBlocks}
 
 KATA KUNCI AMBIGUITAS YANG WAJIB MUNCUL (pilih minimal 3-4):
 ${kataKunci}
+
+ATURAN UTAMA PENULISAN:
 ${BASE_RULES}`;
 }
 
@@ -56,26 +59,28 @@ ${BASE_RULES}`;
 // Strategi baru: kirim TEKS PENUH dengan tanda [[UBAH:...]] pada kalimat highlight.
 // AI bisa lihat kalimat sebelum & sesudah → hasil patch nyambung secara alami.
 function buildPatchSystemPrompt() {
-  return `Kamu adalah editor teks Indonesia ahli yang bertugas memperbaiki kalimat terdeteksi AI.
+  return `Kamu adalah editor teks Indonesia ahli yang bertugas memperbaiki kalimat terdeteksi AI oleh sistem ZeroGPT.
 
 Kamu akan menerima TEKS LENGKAP yang mengandung tanda [[UBAH: ...]].
-Tanda itu menandai kalimat yang terdeteksi sebagai AI oleh ZeroGPT dan HARUS diubah.
+Tanda itu menandai kalimat yang terdeteksi sebagai AI dan HARUS diubah total.
 
 TUGASMU:
-- Ubah HANYA kalimat di dalam tanda [[UBAH: ...]] menjadi versi yang natural, ambigu, dan tidak terdeteksi AI
-- Gunakan kalimat di SEKITAR tanda (konteks sebelum & sesudah) supaya kalimat baru nyambung dengan alur cerita
-- Kalimat di LUAR tanda [[UBAH: ...]] → SIMPAN PERSIS SAMA, tidak boleh ada perubahan satu kata pun
-- Kembalikan SELURUH TEKS — tanda [[UBAH: ...]] harus HILANG dari output (sudah diganti kalimat baru)
+- Ubah HANYA kalimat di dalam tanda [[UBAH: ...]] menjadi versi yang natural, ambigu, dan 100% tidak terdeteksi AI.
+- JANGAN HANYA MENGGANTI SINONIM. Rombak total struktur tata bahasanya! Ubah dari pasif ke aktif, putar susunan SPOK-nya, atau pecah kalimat tersebut menjadi dua kalimat pendek.
+- Gunakan kalimat di SEKITAR tanda (konteks sebelum & sesudah) supaya kalimat baru nyambung secara alami dengan alur cerita.
+- Kalimat di LUAR tanda [[UBAH: ...]] → SIMPAN PERSIS SAMA, tidak boleh ada perubahan satu kata pun.
+- Kembalikan SELURUH TEKS — tanda [[UBAH: ...]] harus HILANG dari output (sudah diganti kalimat baru).
 
 REFERENSI GAYA:
 ${CONTOH_TEKS_LIST[0]}
 
-ATURAN TAMBAHAN:
-- Variasikan panjang kalimat: kadang sangat pendek, kadang mengalir panjang
-- Mulai kalimat dari sudut tidak terduga — hindari selalu mulai dari subjek
-- Gaya bercerita oral — seperti cerita ke teman dekat
-- DILARANG: Markdown, emoji, simbol apapun, heading, bullet
-- Output format: paragraf murni, sama persis struktur aslinya`;
+ATURAN TAMBAHAN (ANTI-AI):
+- DILARANG pakai kata puitis/robotik ("merajut asa", "penuh liku", "tak terbantahkan", dll).
+- Variasikan panjang kalimat: kadang sangat pendek, kadang mengalir panjang (Burstiness tinggi).
+- Mulai kalimat dari sudut tidak terduga — hindari selalu mulai dari subjek.
+- Gaya bercerita oral — seperti cerita ke teman dekat.
+- DILARANG: Markdown, emoji, simbol apapun, heading, bullet.
+- Output format: paragraf murni, sama persis struktur aslinya.`;
 }
 
 // ─── Markdown stripper ────────────────────────────────────────────────────────
@@ -233,7 +238,7 @@ async function patchHighlightedSentences(fullText, highlighted) {
   // ── Step 2: Kirim teks penuh + tanda ke AI — 1 request saja ──────────────
   const userMsg =
     `Berikut adalah teks Character Story yang mengandung tanda [[UBAH: ...]].\n` +
-    `Kalimat di dalam tanda itu terdeteksi sebagai AI dan HARUS diubah.\n` +
+    `Kalimat di dalam tanda itu terdeteksi sebagai AI dan HARUS diubah total strukturnya.\n` +
     `Kalimat di luar tanda → SIMPAN PERSIS, jangan ubah satu kata pun.\n` +
     `Tanda [[UBAH: ...]] harus hilang dari output — gantikan dengan kalimat baru yang natural.\n\n` +
     `TEKS:\n${markedText}`;
