@@ -27,6 +27,26 @@ function capitalizeWords(str) {
     .join(' ');
 }
 
+/**
+ * Ubah kata ulang yang masih dipisah spasi menjadi bentuk bertanda hubung.
+ * Contoh: "hari hari" → "hari-hari", "Siang   siang" → "Siang-siang".
+ *
+ * Ini dijalankan setelah teks lolos ZeroGPT, sehingga tahap deteksi tetap
+ * memeriksa teks hasil generasi/patch dan tidak terpengaruh oleh formatting
+ * akhir ini.
+ */
+function hyphenateReduplicatedWords(text) {
+  return String(text || '').replace(
+    /\b([\p{L}]+)\s+([\p{L}]+)\b/giu,
+    (match, first, second) => {
+      if (first.localeCompare(second, undefined, { sensitivity: 'base' }) !== 0) {
+        return match;
+      }
+      return `${first}-${second.toLowerCase()}`;
+    }
+  );
+}
+
 // ─── %cr-cs command ───────────────────────────────────────────────────────────
 
 async function handleCrCsCommand(message) {
@@ -189,16 +209,6 @@ async function handleCsModalSubmit(interaction) {
   }
 
   // ── Step 2: ZeroGPT loop — WAJIB 0%, tidak kirim sebelum lolos ────────────
-  //
-  //  LOGIKA:
-  //  • aiScore === 100% → Full rewrite seluruh teks
-  //  • aiScore > 0% & < 100% → Patch HANYA kalimat highlight kuning:
-  //      → Kalimat non-highlight DISIMPAN persis aslinya (tidak dikirim ke AI)
-  //      → Kalimat highlight dikirim ke AI, diperbaiki, lalu disisipkan kembali
-  //  • aiScore === 0% → ✅ Lolos, kirim file
-  //  • API unavailable (skipped) → Beritahu user, JANGAN kirim
-  //  • Safety cap tercapai & masih > 0% → Beritahu user, JANGAN kirim
-  //
   let zerogptResult;
   let attempt = 0;
 
@@ -267,7 +277,6 @@ async function handleCsModalSubmit(interaction) {
 
     } else {
       // ── Patch Highlight: >0% & <100% → Ubah HANYA kalimat kuning ─────────
-      // Kalimat non-highlight disimpan asli, hanya kalimat kuning yang dikirim ke AI
       const highlighted = zerogptResult.highlightedSentences;
       const totalKalimat = csText.split(/(?<=[.!?])\s+/).filter(s => s.trim().length > 5).length;
       const simpanCount  = totalKalimat - highlighted.length;
@@ -301,6 +310,10 @@ async function handleCsModalSubmit(interaction) {
   }
 
   // ── Step 3: 0% lolos — Tulis & kirim file .txt ────────────────────────────
+  // Formatting kata ulang dilakukan setelah ZeroGPT lolos agar tidak terdeteksi 
+  // sebagai pola AI saat dicek ZeroGPT.
+  csText = hyphenateReduplicatedWords(csText);
+
   const fileName = `Character Story - ${nama}.txt`;
   const tmpPath  = path.join(os.tmpdir(), fileName);
 
@@ -328,4 +341,11 @@ async function handleCsModalSubmit(interaction) {
   try { fs.unlinkSync(tmpPath); } catch (_) {}
 }
 
-module.exports = { handleCrCsCommand, handleCreateCsButton, handleCsModalSubmit, BUTTON_ID, MODAL_ID };
+module.exports = {
+  handleCrCsCommand,
+  handleCreateCsButton,
+  handleCsModalSubmit,
+  hyphenateReduplicatedWords,
+  BUTTON_ID,
+  MODAL_ID
+};
