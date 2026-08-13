@@ -1,11 +1,11 @@
 {
   "token": "MTQ1OTUxNTQyMzY4MTk0MTczOQ.GCA8-5.6sdIskknSp-78SDWECouayB-tL8NI1EZXNaEaQ",
   "prefix": "%",
-  "aiModel": "gpt-5.5",
+  "aiModel": "gemini-3.1-pro",
   "aiApiUrl": "https://arnaru-ai.vercel.app",
   "csButtonId": "create_cs_modal",
   "csModalId": "submit_cs_form",
-  "maxRetryZeroGPT": 3,
+  "maxRetryZeroGPT": 10,
   "embedColor": "#5865F2",
   "embedColorSuccess": "#57F287",
   "embedColorError": "#ED4245"
